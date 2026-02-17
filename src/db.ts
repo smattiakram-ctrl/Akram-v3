@@ -1,123 +1,109 @@
-// src/db.ts
-
+import { auth, db } from "./firebase.config";
 import {
   collection,
-  addDoc,
-  getDocs,
-  updateDoc,
-  deleteDoc,
   doc,
-  onSnapshot,
+  getDoc,
+  setDoc,
+  getDocs,
   query,
-  where
+  onSnapshot
 } from "firebase/firestore";
-import { db } from "./firebase.config";
 
-/* =======================
-   PRODUCTS
-======================= */
+// IndexedDB المحلي
+const DB_NAME = "NabilInventoryDB";
+const DB_VERSION = 3;
+const DB_PREFIX = "NabilInventory_";
 
-const productsRef = collection(db, "products");
-
-export const addProduct = async (product: any) =>
-  await addDoc(productsRef, product);
-
-export const getProducts = async () => {
-  const snapshot = await getDocs(productsRef);
-  return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-};
-
-export const updateProduct = async (id: string, data: any) =>
-  await updateDoc(doc(db, "products", id), data);
-
-export const deleteProduct = async (id: string) =>
-  await deleteDoc(doc(db, "products", id));
-
-export const getProductByBarcode = async (barcode: string) => {
-  const q = query(productsRef, where("barcode", "==", barcode));
-  const snapshot = await getDocs(q);
-  return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-};
-
-// Realtime
-export const subscribeProducts = (callback: (products: any[]) => void) => {
-  return onSnapshot(productsRef, (snapshot) => {
-    const products = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-    callback(products);
+const openDB = (): Promise<IDBDatabase> => {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve(request.result);
+    request.onupgradeneeded = (event) => {
+      const db = (event.target as IDBOpenDBRequest).result;
+      if (!db.objectStoreNames.contains("categories")) db.createObjectStore("categories", { keyPath: "id" });
+      if (!db.objectStoreNames.contains("products")) db.createObjectStore("products", { keyPath: "id" });
+      if (!db.objectStoreNames.contains("sales")) db.createObjectStore("sales", { keyPath: "id" });
+    };
   });
 };
 
-
-/* =======================
-   CATEGORIES
-======================= */
-
-const categoriesRef = collection(db, "categories");
-
-export const addCategory = async (category: any) =>
-  await addDoc(categoriesRef, category);
-
-export const getCategories = async () => {
-  const snapshot = await getDocs(categoriesRef);
-  return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-};
-
-export const updateCategory = async (id: string, data: any) =>
-  await updateDoc(doc(db, "categories", id), data);
-
-export const deleteCategory = async (id: string) =>
-  await deleteDoc(doc(db, "categories", id));
-
-// Realtime
-export const subscribeCategories = (callback: (categories: any[]) => void) => {
-  return onSnapshot(categoriesRef, (snapshot) => {
-    const categories = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-    callback(categories);
+// دوال IndexedDB كما قبل
+export const getAll = async <T>(storeName: string): Promise<T[]> => {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(storeName, "readonly");
+    const store = transaction.objectStore(storeName);
+    const request = store.getAll();
+    request.onsuccess = () => resolve(request.result || []);
+    request.onerror = () => reject(request.error);
   });
 };
 
-
-/* =======================
-   SALES
-======================= */
-
-const salesRef = collection(db, "sales");
-
-export const addSale = async (sale: any) =>
-  await addDoc(salesRef, sale);
-
-export const getSales = async () => {
-  const snapshot = await getDocs(salesRef);
-  return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+export const saveItem = async <T extends { id: string }>(storeName: string, item: T): Promise<void> => {
+  const dbInstance = await openDB();
+  const transaction = dbInstance.transaction(storeName, "readwrite");
+  transaction.objectStore(storeName).put(item);
+  return new Promise((resolve) => { transaction.oncomplete = () => resolve(); });
 };
 
-export const updateSale = async (id: string, data: any) =>
-  await updateDoc(doc(db, "sales", id), data);
-
-export const deleteSale = async (id: string) =>
-  await deleteDoc(doc(db, "sales", id));
-
-// Realtime
-export const subscribeSales = (callback: (sales: any[]) => void) => {
-  return onSnapshot(salesRef, (snapshot) => {
-    const sales = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-    callback(sales);
-  });
+export const deleteItem = async (storeName: string, id: string): Promise<void> => {
+  const dbInstance = await openDB();
+  const transaction = dbInstance.transaction(storeName, "readwrite");
+  transaction.objectStore(storeName).delete(id);
+  return new Promise((resolve) => { transaction.oncomplete = () => resolve(); });
 };
 
+export const saveEarnings = (amount: number): void => {
+  localStorage.setItem(DB_PREFIX + "TOTAL_EARNINGS", amount.toString());
+};
 
-/* =======================
-   TOTAL EARNINGS
-======================= */
+export const getEarnings = (): number => {
+  const val = localStorage.getItem(DB_PREFIX + "TOTAL_EARNINGS");
+  return val ? parseFloat(val) : 0;
+};
 
-// نحسب الأرباح مباشرة من المبيعات
-export const subscribeTotalEarnings = (callback: (total: number) => void) => {
-  return onSnapshot(salesRef, (snapshot) => {
-    let total = 0;
-    snapshot.docs.forEach(doc => {
-      const data: any = doc.data();
-      total += data.amount || 0;
-    });
-    callback(total);
+export const saveUser = (user: any): void => {
+  localStorage.setItem(DB_PREFIX + "CURRENT_USER", JSON.stringify(user));
+};
+
+export const getUser = (): any | null => {
+  const user = localStorage.getItem(DB_PREFIX + "CURRENT_USER");
+  return user ? JSON.parse(user) : null;
+};
+
+export const clearAllLocalData = async (): Promise<void> => {
+  const dbInstance = await openDB();
+  const stores = ["categories", "products", "sales"];
+  const tx = dbInstance.transaction(stores, "readwrite");
+  stores.forEach(store => tx.objectStore(store).clear());
+  localStorage.removeItem(DB_PREFIX + "TOTAL_EARNINGS");
+  return new Promise((resolve) => { tx.oncomplete = () => resolve(); });
+};
+
+// ================== Firebase Cloud ==================
+
+// مزامنة إلى Firebase لكل مستخدم
+export const syncToCloud = async (userId: string, data: any) => {
+  if (!userId) return;
+  const userDoc = doc(db, "users", userId);
+  await setDoc(userDoc, { ...data, lastSync: Date.now() });
+};
+
+// جلب البيانات من Firebase لكل مستخدم
+export const fetchFromCloud = async (userId: string) => {
+  if (!userId) return null;
+  const userDoc = doc(db, "users", userId);
+  const docSnap = await getDoc(userDoc);
+  return docSnap.exists() ? docSnap.data() : null;
+};
+
+// الاشتراك في Realtime updates لكل Collection
+export const subscribeToCollection = (userId: string, collectionName: string, callback: (data: any[]) => void) => {
+  const colRef = collection(db, "users", userId, collectionName);
+  return onSnapshot(colRef, (snapshot) => {
+    const items: any[] = [];
+    snapshot.forEach(doc => items.push({ id: doc.id, ...doc.data() }));
+    callback(items);
   });
 };
