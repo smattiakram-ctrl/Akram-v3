@@ -1,12 +1,9 @@
-// db.ts - نسخة Google Drive
 const DB_NAME = 'NabilInventoryDB';
 const DB_VERSION = 3; 
 const DB_PREFIX = 'NabilInventory_';
 
-// --- إعدادات Google Drive ---
+// إعدادات Google Drive الخاصة بك
 const CLIENT_ID = '193989877512-vekucvd5hbb801cgnsb4nsju1u8gbo4a.apps.googleusercontent.com';
-const DISCOVERY_DOCS = ["https://www.googleapis.com/discovery/v1/apis/drive/v3/rest"];
-const SCOPES = 'https://www.googleapis.com/auth/drive.appdata';
 
 const openDB = (): Promise<IDBDatabase> => {
   return new Promise((resolve, reject) => {
@@ -22,79 +19,60 @@ const openDB = (): Promise<IDBDatabase> => {
   });
 };
 
-// --- وظائف Google Drive الجديدة ---
-
+// وظيفة حفظ البيانات في Google Drive
 export const syncToCloud = async (email: string, data: any): Promise<void> => {
   if (!email || !window.gapi?.client?.drive) return;
-  
   try {
-    const fileName = 'nabil_backup.json';
-    // البحث عن الملف الحالي في درايف
-    const response = await window.gapi.client.drive.files.list({
+    const fileName = 'nabil_inventory_backup.json';
+    const listResponse = await window.gapi.client.drive.files.list({
       q: `name='${fileName}' and spaces='appDataFolder'`,
-      fields: 'files(id)',
       spaces: 'appDataFolder'
     });
 
-    const fileId = response.result.files?.[0]?.id;
-    const boundary = 'foo_bar_baz';
+    const fileId = listResponse.result.files?.[0]?.id;
     const metadata = { name: fileName, parents: ['appDataFolder'] };
-    const content = JSON.stringify({ ...data, lastSync: Date.now() });
+    const content = JSON.stringify(data);
+    
+    const boundary = 'foo_bar_baz';
+    const body = `--${boundary}\nContent-Type: application/json; charset=UTF-8\n\n${JSON.stringify(metadata)}\n--${boundary}\nContent-Type: application/json\n\n${content}\n--${boundary}--`;
 
-    const multipartRequestBody =
-      `--${boundary}\nContent-Type: application/json; charset=UTF-8\n\n${JSON.stringify(metadata)}\n` +
-      `--${boundary}\nContent-Type: application/json\n\n${content}\n--${boundary}--`;
+    const path = fileId ? `/upload/drive/v3/files/${fileId}?uploadType=multipart` : '/upload/drive/v3/files?uploadType=multipart';
+    const method = fileId ? 'PATCH' : 'POST';
 
-    if (fileId) {
-      // تحديث ملف موجود
-      await fetch(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=multipart`, {
-        method: 'PATCH',
-        headers: {
-          'Authorization': `Bearer ${window.gapi.auth2.getAuthInstance().currentUser.get().getAuthResponse().access_token}`,
-          'Content-Type': `multipart/related; boundary=${boundary}`
-        },
-        body: multipartRequestBody
-      });
-    } else {
-      // إنشاء ملف جديد
-      await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${window.gapi.auth2.getAuthInstance().currentUser.get().getAuthResponse().access_token}`,
-          'Content-Type': `multipart/related; boundary=${boundary}`
-        },
-        body: multipartRequestBody
-      });
-    }
-  } catch (error) {
-    console.error("فشلت المزامنة مع درايف:", error);
+    await window.gapi.client.request({
+      path, method,
+      params: { uploadType: 'multipart' },
+      headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
+      body
+    });
+  } catch (e) {
+    console.error("خطأ في المزامنة السحابية", e);
   }
 };
 
+// وظيفة جلب البيانات من Google Drive
 export const fetchFromCloud = async (email: string): Promise<any | null> => {
   if (!email || !window.gapi?.client?.drive) return null;
   try {
-    const response = await window.gapi.client.drive.files.list({
-      q: "name='nabil_backup.json' and spaces='appDataFolder'",
-      fields: 'files(id)',
+    const listResponse = await window.gapi.client.drive.files.list({
+      q: "name='nabil_inventory_backup.json' and spaces='appDataFolder'",
       spaces: 'appDataFolder'
     });
-
-    const fileId = response.result.files?.[0]?.id;
+    const fileId = listResponse.result.files?.[0]?.id;
     if (!fileId) return null;
 
-    const fileData = await window.gapi.client.drive.files.get({
+    const response = await window.gapi.client.drive.files.get({
       fileId: fileId,
       alt: 'media'
     });
-    return fileData.result;
-  } catch (error) {
-    console.error("فشل جلب البيانات من درايف:", error);
+    return response.result;
+  } catch (e) {
+    console.error("خطأ في جلب البيانات السحابية", e);
     return null;
   }
 };
 
-// --- الوظائف الأصلية (تُبقى كما هي لدعم التشغيل المحلي) ---
+// بقية الوظائف الأساسية كما هي لضمان عمل التطبيق محلياً
 export const getAll = async <T>(storeName: string): Promise<T[]> => {
   const db = await openDB();
   return new Promise((resolve, reject) => {
@@ -159,4 +137,4 @@ export const overwriteLocalData = async (data: any): Promise<void> => {
   if (data.earnings !== undefined) saveEarnings(data.earnings);
   return new Promise((resolve) => { tx.oncomplete = () => resolve(); });
 };
-      
+        
